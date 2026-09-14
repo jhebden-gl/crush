@@ -152,10 +152,11 @@ unaffected.
 
 ## `UserPromptSubmit` event
 
-**Status:** partially implemented as `TurnStart`. The current `TurnStart` event
-fires when the agent begins processing a prompt but does not yet support
-`decision` (blocking prompts) or `updated_prompt` (rewriting prompts). Those
-control features are still planned.
+**Status:** partially implemented. `TurnStart` fires when the agent begins
+processing a prompt but is observe-only. `UserPromptSubmit` fires before the
+turn reaches the model and its `context` is prepended to the outbound prompt.
+`updated_prompt`, `decision` (deny), and `halt` remain future work, as does
+`context_files`.
 
 ### Motivation
 

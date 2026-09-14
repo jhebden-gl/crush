@@ -59,6 +59,11 @@ const (
 
 	// EventPostCompact fires after context compaction completes.
 	EventPostCompact = "PostCompact"
+
+	// EventUserPromptSubmit fires after a user message is recorded and
+	// before the turn reaches the LLM. Only injected context is honored
+	// today; see Runner.RunPrompt.
+	EventUserPromptSubmit = "UserPromptSubmit"
 )
 
 // AllEvents lists every supported hook event name. Used for config
@@ -76,6 +81,7 @@ var AllEvents = []string{
 	EventStopFailure,
 	EventPreCompact,
 	EventPostCompact,
+	EventUserPromptSubmit,
 }
 
 // eventNormMap maps lowercased-no-underscores event names to their
