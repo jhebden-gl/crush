@@ -6,28 +6,35 @@ description: Use when the user wants to add, write, debug, or configure a Crush 
 # Crush Hooks
 
 Hooks are user-defined commands in `crush.json` that fire at specific points
-during execution, giving deterministic control over tool behavior. They run
-**before** permission checks and **only on the top-level agent's** tool calls —
-sub-agent calls (task tool, agentic_fetch, etc.) are not intercepted, though
-the sub-agent tool call itself is.
+during execution, giving deterministic control over tool behavior. `PreToolUse`
+hooks run **before** permission checks and **only on the top-level agent's** tool
+calls — sub-agent calls (task tool, agentic_fetch, etc.) are not intercepted,
+though the sub-agent tool call itself is. `UserPromptSubmit` hooks run on the
+top-level agent on every submitted prompt.
 
 For the full reference, see `docs/hooks/README.md`. This skill covers what you
 need to author correct hooks.
 
 ## Supported Events
 
-Crush supports 12 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
+Crush supports 13 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
 `SessionEnd`, `TurnStart`, `TurnEnd`, `StopFailure`, `Interrupt`,
-`PermissionRequest`, `PermissionResult`, `PreCompact`, `PostCompact`. Event
-names are case-insensitive and accept snake_case (`PreToolUse`, `pretooluse`,
-`pre_tool_use` all work). Tool events (`PreToolUse`, `PostToolUse`) support
-`matcher` to filter by tool name; lifecycle events run all configured hooks.
+`PermissionRequest`, `PermissionResult`, `PreCompact`, `PostCompact`,
+`UserPromptSubmit`. Event names are case-insensitive and accept snake_case
+(`PreToolUse`, `pretooluse`, `pre_tool_use` all work). Tool events
+(`PreToolUse`, `PostToolUse`) support `matcher` to filter by tool name;
+lifecycle events run all configured hooks.
 
 `TurnEnd` is special among lifecycle events: its stdin payload includes a
 `text` field containing the assistant's rendered text output for the turn.
 The hook remains observe-only. It fires only for top-level turns, not for
 sub-agents (`agentic_fetch`, the task tool), so it runs once per user-facing
 turn rather than once per delegated sub-agent turn.
+
+`UserPromptSubmit` fires after the user message is recorded and before the
+turn reaches the model. Only the `context` field is honored: it is prepended
+to the outbound prompt. `decision`, `halt`, and `updated_prompt` are parsed
+but not enforced, and `matcher` is ignored (there is no tool name).
 
 ## Configuration
 

@@ -158,6 +158,34 @@ func (r *Runner) RunTurnEnd(ctx context.Context, sessionID, text string) {
 	slog.Info("Hook completed", "event", EventTurnEnd, "hooks", agg.HookCount)
 }
 
+// RunPrompt executes every configured UserPromptSubmit hook and returns
+// the aggregated result. Matchers are meaningless for this event (there is
+// no tool name to match), so they are not applied.
+//
+// Only the aggregated Context is honored by the caller today; decision,
+// halt, and updated_input are parsed and surfaced so a later change can
+// act on them, but they do not affect the turn yet.
+func (r *Runner) RunPrompt(ctx context.Context, sessionID, prompt string) (AggregateResult, error) {
+	hooks := r.matchingHooks(EventUserPromptSubmit, "")
+	if len(hooks) == 0 {
+		return AggregateResult{Decision: DecisionNone}, nil
+	}
+
+	envVars := BuildPromptEnv(EventUserPromptSubmit, sessionID, r.cwd, r.projectDir)
+	payload := BuildPromptPayload(EventUserPromptSubmit, sessionID, r.cwd, prompt)
+
+	agg := r.executeHooks(ctx, hooks, envVars, payload, "", false)
+	slog.Info("Hook completed", "event", EventUserPromptSubmit, "hooks", agg.HookCount)
+	if agg.Decision == DecisionDeny || agg.Halt {
+		slog.Warn(
+			"UserPromptSubmit hook decision is not enforced yet; ignoring",
+			"decision", agg.Decision.String(),
+			"halt", agg.Halt,
+		)
+	}
+	return agg, nil
+}
+
 // executeHooks is the shared orchestration. It deduplicates hooks by
 // command, runs them in parallel, waits for completion, and aggregates
 // results in config order.
