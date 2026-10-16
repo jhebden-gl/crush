@@ -89,6 +89,12 @@ type SessionAgentCall struct {
 	Prompt            string
 	ProviderOptions   fantasy.ProviderOptions
 	Attachments       []message.Attachment
+	// stopContinuations counts consecutive passes requested by Stop
+	// hooks, and stopHookActive tells the next Stop hook that this pass
+	// was itself requested by one. Both are set only on the synthetic
+	// continuation call.
+	stopContinuations int
+	stopHookActive    bool
 	MaxOutputTokens   int64
 	Temperature       *float64
 	TopP              *float64
@@ -301,6 +307,57 @@ func (a *sessionAgent) fireTurnEndHook(ctx context.Context, sessionID string, ms
 		text = msg.Content().String()
 	}
 	a.hookRunner.RunTurnEnd(ctx, sessionID, text)
+}
+
+// maxStopContinuations bounds how many consecutive extra passes Stop hooks
+// can request, so a hook that never approves cannot loop forever.
+const maxStopContinuations = 25
+
+// fireTextCompleteHook runs TextComplete hooks on a finished text block and
+// returns the replacement, or "" when the block should stay as written.
+func (a *sessionAgent) fireTextCompleteHook(ctx context.Context, sessionID, messageID, text string) string {
+	if a.hookRunner == nil || strings.TrimSpace(text) == "" {
+		return ""
+	}
+	agg := a.hookRunner.RunTextComplete(ctx, sessionID, messageID, text)
+	if agg.UpdatedText == text {
+		return ""
+	}
+	return agg.UpdatedText
+}
+
+// fireStepStartHook runs StepStart hooks and returns the context to show the
+// model on this call only.
+func (a *sessionAgent) fireStepStartHook(ctx context.Context, sessionID string, step int) string {
+	if a.hookRunner == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.hookRunner.RunStepStart(ctx, sessionID, step).Context)
+}
+
+// stopContinuation runs Stop hooks for a finished top-level turn. It returns
+// the call for another pass when a hook asked for one, or nil.
+func (a *sessionAgent) stopContinuation(ctx context.Context, call SessionAgentCall, finalText string) *SessionAgentCall {
+	if a.hookRunner == nil || !a.hookRunner.HasEvent(hooks.EventStop) {
+		return nil
+	}
+	if call.stopContinuations >= maxStopContinuations {
+		slog.Warn("Stop hook continuation limit reached; stopping", "session_id", call.SessionID, "limit", maxStopContinuations)
+		return nil
+	}
+	agg := a.hookRunner.RunStop(ctx, call.SessionID, finalText, call.stopHookActive)
+	if !agg.ContinueRequested() {
+		return nil
+	}
+	next := call
+	next.Prompt = cmp.Or(strings.TrimSpace(agg.Reason), "A Stop hook reports that work remains. Continue.")
+	next.Attachments = nil
+	next.HiddenUserMessage = false
+	next.OnComplete = nil
+	next.Accepted = nil
+	next.stopHookActive = true
+	next.stopContinuations = call.stopContinuations + 1
+	return &next
 }
 
 type SessionAgentOptions struct {
@@ -905,6 +962,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if call.MaxOutputTokens > 0 {
 		maxOutputTokens = &call.MaxOutputTokens
 	}
+	// Text, step, and stop hooks only run for top-level turns, like the other
+	// lifecycle hooks: a delegated sub-agent turn would fire them N times.
+	topLevel := !call.NonInteractive && !a.isSubAgent
+	var (
+		stepIndex      int
+		textBlockStart int
+		turnStopped    bool
+	)
 	result, err = agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:           message.PromptWithTextAttachments(outboundPrompt, call.Attachments),
 		Files:            files,
@@ -974,6 +1039,16 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
 			}
 
+			// StepStart hooks add context for this model call only. It goes
+			// after the cache marks so the cached prefix is unchanged, and it
+			// is not stored, so it is not replayed on later steps or turns.
+			if topLevel {
+				if hookContext := a.fireStepStartHook(callContext, call.SessionID, stepIndex); hookContext != "" {
+					prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(hookContext))
+				}
+			}
+			stepIndex++
+
 			sessionLock.Lock()
 			stepMessages = cloneFantasyMessages(prepared.Messages)
 			sessionLock.Unlock()
@@ -1021,6 +1096,26 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				}
 			}
 			currentAssistant.FinishThinking()
+			return a.messages.Update(genCtx, *currentAssistant)
+		},
+		OnTextStart: func(id string) error {
+			textBlockStart = len(currentAssistant.Content().Text)
+			return nil
+		},
+		OnTextEnd: func(id string) error {
+			if !topLevel {
+				return nil
+			}
+			content := currentAssistant.Content().Text
+			if textBlockStart > len(content) {
+				return nil
+			}
+			block := content[textBlockStart:]
+			replacement := a.fireTextCompleteHook(genCtx, call.SessionID, currentAssistant.ID, block)
+			if replacement == "" {
+				return nil
+			}
+			currentAssistant.SetContent(content[:textBlockStart] + replacement)
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		OnTextDelta: func(id string, text string) error {
@@ -1132,6 +1227,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			if finishReason == message.FinishReasonToolUse {
 				for _, tr := range stepResult.Content.ToolResults() {
 					if tr.StopTurn {
+						turnStopped = true
 						finishReason = message.FinishReasonEndTurn
 						break
 					}
@@ -1402,6 +1498,17 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	// across the recursive Run's own dispatch handoff — keeping the
 	// session observable to Cancel for the entire transition and
 	// closing the dequeue -> re-register window.
+	// Ask Stop hooks whether the turn may end. A prompt the user already
+	// queued takes priority, and a halted turn is never extended. A user
+	// cancel returns through the error path above, so a normal finish is the
+	// only way to get here.
+	var stopCall *SessionAgentCall
+	if topLevel && !turnStopped && ctx.Err() == nil && currentAssistant != nil {
+		if pending, _ := a.messageQueue.Get(call.SessionID); len(pending) == 0 {
+			stopCall = a.stopContinuation(ctx, call, currentAssistant.Content().String())
+		}
+	}
+
 	mu := a.sessionMu(call.SessionID)
 	mu.Lock()
 	queuedMessages, _ := a.messageQueue.Get(call.SessionID)
@@ -1428,6 +1535,9 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		// terminal cancelled RunComplete so a caller waiting on that
 		// RunID does not hang.
 		a.publishCanceledQueueDrops(canceledRunIDDrops)
+	}
+	if len(queuedMessages) == 0 && stopCall != nil {
+		queuedMessages = []SessionAgentCall{*stopCall}
 	}
 	if len(queuedMessages) == 0 {
 		// No queued work. Clear the cancel mark only when no accepted
