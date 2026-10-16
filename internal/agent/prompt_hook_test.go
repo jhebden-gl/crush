@@ -50,7 +50,7 @@ func promptText(p fantasy.Prompt) string {
 
 func promptHookRunner(t *testing.T, command string) *hooks.Runner {
 	t.Helper()
-	return hooks.NewRunner([]config.HookConfig{{Command: command}}, t.TempDir(), t.TempDir())
+	return hooks.NewRunner(map[string][]config.HookConfig{hooks.EventUserPromptSubmit: {{Command: command}}}, t.TempDir(), t.TempDir())
 }
 
 // seedUserMessage records an earlier user message so Run does not kick off
