@@ -129,6 +129,15 @@ func marshalPayload(v any) []byte {
 	return data
 }
 
+// StopPayload extends LifecyclePayload with the turn's final text and
+// whether this stop was itself triggered by a Stop hook, so a hook can
+// avoid asking for continuation forever.
+type StopPayload struct {
+	LifecyclePayload
+	Text           string `json:"text"`
+	StopHookActive bool   `json:"stop_hook_active"`
+}
+
 // TurnEndPayload extends LifecyclePayload with the assistant's
 // rendered text content for the completed turn. Observe-only;
 // hooks cannot modify or block based on this data.
@@ -149,6 +158,15 @@ func BuildTurnEndPayload(sessionID, cwd, text string) []byte {
 	return marshalPayload(TurnEndPayload{
 		LifecyclePayload: lifecycle(EventTurnEnd, sessionID, cwd),
 		Text:             text,
+	})
+}
+
+// BuildStopPayload constructs the stdin payload for a Stop hook.
+func BuildStopPayload(sessionID, cwd, text string, stopHookActive bool) []byte {
+	return marshalPayload(StopPayload{
+		LifecyclePayload: lifecycle(EventStop, sessionID, cwd),
+		Text:             text,
+		StopHookActive:   stopHookActive,
 	})
 }
 
@@ -267,6 +285,7 @@ func parseStdout(stdout string) HookResult {
 		Context: parseContext(parsed.Context),
 	}
 	result.Decision = parseDecision(parsed.Decision)
+	result.Block = strings.EqualFold(parsed.Decision, "block")
 	result.UpdatedInput = rawToString(parsed.UpdatedInput)
 	return result
 }
