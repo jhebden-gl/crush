@@ -36,10 +36,11 @@ type Payload struct {
 // commands via stdin. There is no tool at this point in the turn, so the
 // payload carries the prompt instead of tool_name/tool_input.
 type PromptPayload struct {
-	Event     string `json:"event"`
-	SessionID string `json:"session_id"`
-	CWD       string `json:"cwd"`
-	Prompt    string `json:"prompt"`
+	Event         string `json:"event"`
+	HookEventName string `json:"hook_event_name"`
+	SessionID     string `json:"session_id"`
+	CWD           string `json:"cwd"`
+	Prompt        string `json:"prompt"`
 }
 
 // BuildPayload constructs the JSON stdin payload for a hook command.
@@ -100,9 +101,32 @@ func BuildPostToolUsePayload(sessionID, cwd, toolName, toolInputJSON, toolOutput
 // stdin for non-tool lifecycle events (SessionStart, TurnStart, etc.).
 // ToolName and ToolInput are omitted since they don't apply.
 type LifecyclePayload struct {
-	Event     string `json:"event"`
-	SessionID string `json:"session_id"`
-	CWD       string `json:"cwd"`
+	Event         string `json:"event"`
+	HookEventName string `json:"hook_event_name"`
+	SessionID     string `json:"session_id"`
+	CWD           string `json:"cwd"`
+}
+
+// lifecycle builds the common part of every non-tool payload. Event and
+// HookEventName carry the same value: Crush's own key and the one Claude
+// Code hooks read.
+func lifecycle(eventName, sessionID, cwd string) LifecyclePayload {
+	return LifecyclePayload{
+		Event:         eventName,
+		HookEventName: eventName,
+		SessionID:     sessionID,
+		CWD:           cwd,
+	}
+}
+
+// marshalPayload encodes a payload, falling back to an empty object so a
+// hook always gets valid JSON on stdin.
+func marshalPayload(v any) []byte {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return []byte("{}")
+	}
+	return data
 }
 
 // TurnEndPayload extends LifecyclePayload with the assistant's
@@ -116,34 +140,16 @@ type TurnEndPayload struct {
 // BuildLifecyclePayload constructs the JSON stdin payload for a
 // lifecycle hook command (non-tool events).
 func BuildLifecyclePayload(eventName, sessionID, cwd string) []byte {
-	p := LifecyclePayload{
-		Event:     eventName,
-		SessionID: sessionID,
-		CWD:       cwd,
-	}
-	data, err := json.Marshal(p)
-	if err != nil {
-		return []byte("{}")
-	}
-	return data
+	return marshalPayload(lifecycle(eventName, sessionID, cwd))
 }
 
 // BuildTurnEndPayload constructs the JSON stdin payload for a
 // TurnEnd hook, including the assistant's rendered text content.
 func BuildTurnEndPayload(sessionID, cwd, text string) []byte {
-	p := TurnEndPayload{
-		LifecyclePayload: LifecyclePayload{
-			Event:     EventTurnEnd,
-			SessionID: sessionID,
-			CWD:       cwd,
-		},
-		Text: text,
-	}
-	data, err := json.Marshal(p)
-	if err != nil {
-		return []byte("{}")
-	}
-	return data
+	return marshalPayload(TurnEndPayload{
+		LifecyclePayload: lifecycle(EventTurnEnd, sessionID, cwd),
+		Text:             text,
+	})
 }
 
 // BuildLifecycleEnv constructs the environment variable slice for a
@@ -192,17 +198,13 @@ func BuildEnv(eventName, toolName, sessionID, cwd, projectDir, toolInputJSON str
 // BuildPromptPayload constructs the JSON stdin payload for a
 // UserPromptSubmit hook command.
 func BuildPromptPayload(eventName, sessionID, cwd, prompt string) []byte {
-	p := PromptPayload{
-		Event:     eventName,
-		SessionID: sessionID,
-		CWD:       cwd,
-		Prompt:    prompt,
-	}
-	data, err := json.Marshal(p)
-	if err != nil {
-		return []byte("{}")
-	}
-	return data
+	return marshalPayload(PromptPayload{
+		Event:         eventName,
+		HookEventName: eventName,
+		SessionID:     sessionID,
+		CWD:           cwd,
+		Prompt:        prompt,
+	})
 }
 
 // BuildPromptEnv constructs the environment variable slice for a

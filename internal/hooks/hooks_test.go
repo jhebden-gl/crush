@@ -247,6 +247,22 @@ func TestBuildPayloadCarriesClaudeCodeEventKey(t *testing.T) {
 	require.Equal(t, EventPreToolUse, decoded["event"])
 }
 
+// The same shared Claude Code hook receives lifecycle events too, so their
+// payloads need hook_event_name as well.
+func TestLifecyclePayloadsCarryClaudeCodeEventKey(t *testing.T) {
+	t.Parallel()
+	for name, payload := range map[string][]byte{
+		EventSessionStart:     BuildLifecyclePayload(EventSessionStart, "sess-1", "/work"),
+		EventTurnEnd:          BuildTurnEndPayload("sess-1", "/work", "done"),
+		EventUserPromptSubmit: BuildPromptPayload(EventUserPromptSubmit, "sess-1", "/work", "hi"),
+	} {
+		var decoded map[string]any
+		require.NoError(t, json.Unmarshal(payload, &decoded), name)
+		require.Equal(t, name, decoded["hook_event_name"], name)
+		require.Equal(t, name, decoded["event"], name)
+	}
+}
+
 func TestRunnerExitCode0Allow(t *testing.T) {
 	t.Parallel()
 	hookCfg := config.HookConfig{
