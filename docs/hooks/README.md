@@ -17,7 +17,7 @@ forward.
 - Hooks are Claude Code-compatible
 - Crush ships with a builtin `crush-hook` skill write, edit, and configure
   hooks; just tell Crush how to configure Crush
-- Crush supports 14 hook events covering the full agent lifecycle: tool use,
+- Crush supports 15 hook events covering the full agent lifecycle: tool use,
   session management, turn control, prompt submission, permissions, compaction,
   and error handling
 - Hooks run in parallel for speed, but their results compose in config order
@@ -179,7 +179,7 @@ wins when rewriting input, but first deny wins when blocking.
 
 ## Events
 
-Crush supports 14 hook events. Event names are case-insensitive and accept
+Crush supports 15 hook events. Event names are case-insensitive and accept
 snake_case (`PreToolUse`, `pre_tool_use`, `PRETOOLUSE` all work).
 
 | Event               | Fires When                          | Control                                  | Matcher   |
@@ -198,6 +198,7 @@ snake_case (`PreToolUse`, `pre_tool_use`, `PRETOOLUSE` all work).
 | `PostCompact`       | After context compaction            | observe                                  | —         |
 | `UserPromptSubmit`  | Prompt recorded, before the model   | context                                  | —         |
 | `StepStart`         | Before each model call in a turn    | context (this call only)                 | —         |
+| `Stop`              | Turn is about to end                | continue the turn                        | —         |
 
 **Matcher** only applies to tool events (`PreToolUse`, `PostToolUse`). It's a
 regex tested against the tool name (e.g. `^bash$`, `^(edit|write)$`,
@@ -234,9 +235,51 @@ context.
 echo "{\"context\": \"Current branch: $(git branch --show-current)\"}"
 ```
 
+### Stop
+
+`Stop` fires when the agent has finished a turn and would otherwise stop, and
+only for the top-level agent. Sub-agents run without it, for the same reason
+they run without tool hooks. The payload carries the turn's final `text` and
+`stop_hook_active`, which is `true` when this pass was itself requested by a
+`Stop` hook.
+
+A hook asks for another pass with `{"decision": "block", "reason": "..."}`, or
+by exiting 2 with the reason on stderr. The reason becomes the next prompt; if
+there is none, Crush asks the model to continue. This is the `decision: "block"`
+contract of the Claude Code `Stop` hook. Its other fields, such as `continue`
+and `stopReason`, are not honored. A hook that halts (exit code 49) ends the
+turn, and a hook that fails or times out lets it end.
+
+Each extra pass is a full turn: `UserPromptSubmit` (with the reason as the
+prompt), `TurnStart`, `Stop`, and `TurnEnd` hooks fire for it again, and the
+`TurnEnd` of one pass runs before the next begins.
+
+The session stays busy while the hook runs, so cancelling stops the hook and
+ends the turn. Crush does not fire `Stop` when a tool ended the turn (a hook
+halt, a permission denial, or a question to the user), when the user has
+already queued another prompt, after a cancel, or after the context was
+summarized. It allows at most 25 consecutive extra passes. Check
+`stop_hook_active` in your hook to avoid asking forever.
+
+The hook runs under the usual hook `timeout` (30 seconds by default), and a
+hook that times out lets the turn end without a warning. Set a `timeout` long
+enough for the check the hook runs.
+
+```bash
+#!/usr/bin/env bash
+# Stop hook: keep going until the test suite passes.
+read -r input
+[ "$(echo "$input" | jq -r .stop_hook_active)" = "true" ] && exit 0
+if ! go test ./... >/tmp/test.log 2>&1; then
+  jq -n --arg r "Tests are failing:"$'\n'"$(tail -20 /tmp/test.log)" \
+    '{decision: "block", reason: $r}'
+fi
+```
+
 > **Note:** `TurnEnd` carries the assistant's rendered text content in its
 > stdin payload (`text` field). See [Stdin payload — TurnEnd](#stdin-payload--turnend)
-> below. `StepStart` also adds fields ([Stdin payload — StepStart](#stdin-payload--stepstart)).
+> below. `StepStart` and `Stop` also add fields ([Stdin payload — StepStart](#stdin-payload--stepstart),
+> [Stdin payload — Stop](#stdin-payload--stop)).
 > All other lifecycle events use only the common fields.
 
 **Scope**: tool events only fire on the **top-level agent's** tool calls.
@@ -888,6 +931,23 @@ Extends the common payload with the submitted prompt:
 }
 ```
 
+### Stdin payload — Stop
+
+`Stop` extends the common payload with the turn's final text and whether this
+pass was itself requested by a `Stop` hook.
+
+```jsonc
+{
+  // ...common fields...
+
+  // string. The assistant's rendered text output for this turn.
+  "text": "All done.",
+
+  // boolean. True when a Stop hook requested this pass.
+  "stop_hook_active": false
+}
+```
+
 ### Output envelope (common)
 
 Fields a hook may print to stdout on exit 0. All are optional and apply to every
@@ -955,6 +1015,13 @@ affect the turn.
 
 Only `context` is honored. It is shown to the model on this call only.
 `decision`, `halt`, and exit codes 2 and 49 are ignored.
+
+### Output envelope — Stop
+
+`decision: "block"` with a `reason` asks for another pass, using the reason as
+the next prompt. Exit code 2 with the reason on stderr does the same. A halt
+(exit code 49, or `halt: true`) ends the turn. Any other result lets the turn
+end.
 
 ### Exit codes
 

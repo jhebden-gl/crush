@@ -17,12 +17,12 @@ need to author correct hooks.
 
 ## Supported Events
 
-Crush supports 14 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
+Crush supports 15 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
 `SessionEnd`, `TurnStart`, `TurnEnd`, `StopFailure`, `Interrupt`,
 `PermissionRequest`, `PermissionResult`, `PreCompact`, `PostCompact`,
-`UserPromptSubmit`, `StepStart`. Event names are case-insensitive and accept
-snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work). Tool events
-(`PreToolUse`, `PostToolUse`) support `matcher` to filter by tool name;
+`UserPromptSubmit`, `StepStart`, `Stop`. Event names are case-insensitive and
+accept snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work). Tool
+events (`PreToolUse`, `PostToolUse`) support `matcher` to filter by tool name;
 lifecycle events run all configured hooks.
 
 `TurnEnd` is special among lifecycle events: its stdin payload includes a
@@ -41,6 +41,14 @@ but not enforced, and `matcher` is ignored (there is no tool name).
 `{"context": "..."}` to show the model extra context on that call only, wrapped
 in a `<system_reminder>` block; the context is not stored or replayed on later
 calls. The call waits for the hook, so keep it fast and set a `timeout`.
+
+`Stop` fires when a turn is about to end, only for the top-level agent, and
+`matcher` is ignored. Its payload has `text` and `stop_hook_active`. Print
+`{"decision": "block", "reason": "..."}`, or exit 2 with the reason on stderr,
+to run another pass with the reason as the prompt. Exit 49 (halt) ends the
+turn. Check `stop_hook_active` to avoid asking forever; Crush caps it at 25
+passes. Set a hook `timeout` long enough for the check: a timeout lets the turn
+end.
 
 ## Configuration
 

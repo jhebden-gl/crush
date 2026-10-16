@@ -138,6 +138,12 @@ type SessionAgentCall struct {
 	// is rewritten and no longer carries the element, so the reply
 	// target is not lost when a long channel turn is summarized.
 	channelMeta map[string]string
+	// stopContinuations counts consecutive passes requested by Stop
+	// hooks, and stopHookActive tells the next Stop hook that this pass
+	// was itself requested by one. Both are set only on the synthetic
+	// continuation call.
+	stopContinuations int
+	stopHookActive    bool
 }
 
 // filterToolsForChannel scopes the tool list for a turn. A channel-originated
@@ -310,6 +316,37 @@ func (a *sessionAgent) fireStepStartHook(ctx context.Context, sessionID string, 
 		return ""
 	}
 	return strings.TrimSpace(a.hookRunner.RunStepStart(ctx, sessionID, step).Context)
+}
+
+// maxStopContinuations bounds how many consecutive extra passes Stop hooks
+// can request, so a hook that never approves cannot loop forever.
+const maxStopContinuations = 25
+
+// stopContinuation runs Stop hooks for a finished top-level turn. It returns
+// the call for another pass when a hook asked for one, or nil.
+func (a *sessionAgent) stopContinuation(ctx context.Context, call SessionAgentCall, finalText string) *SessionAgentCall {
+	if a.hookRunner == nil || !a.hookRunner.HasEvent(hooks.EventStop) {
+		return nil
+	}
+	if call.stopContinuations >= maxStopContinuations {
+		slog.Warn("Stop hook continuation limit reached; stopping", "session_id", call.SessionID, "limit", maxStopContinuations)
+		return nil
+	}
+	agg := a.hookRunner.RunStop(ctx, call.SessionID, finalText, call.stopHookActive)
+	if ctx.Err() != nil || !agg.ContinueRequested() {
+		return nil
+	}
+	// The continuation runs inside this Run, so it keeps the caller's
+	// OnComplete and the turn still publishes a single terminal event, from
+	// its last pass.
+	next := call
+	next.Prompt = cmp.Or(strings.TrimSpace(agg.Reason), "A Stop hook reports that work remains. Continue.")
+	next.Attachments = nil
+	next.HiddenUserMessage = false
+	next.Accepted = nil
+	next.stopHookActive = true
+	next.stopContinuations = call.stopContinuations + 1
+	return &next
 }
 
 type SessionAgentOptions struct {
@@ -915,10 +952,13 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if call.MaxOutputTokens > 0 {
 		maxOutputTokens = &call.MaxOutputTokens
 	}
-	// Step hooks only run for top-level turns: a delegated sub-agent turn
-	// would fire them once per call.
+	// Step and stop hooks only run for top-level turns: a delegated sub-agent
+	// turn would fire them once per call or task.
 	topLevel := !call.NonInteractive && !a.isSubAgent
-	var stepIndex int
+	var (
+		stepIndex   int
+		turnStopped bool
+	)
 	result, err = agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:           message.PromptWithTextAttachments(outboundPrompt, call.Attachments),
 		Files:            files,
@@ -1161,6 +1201,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			if finishReason == message.FinishReasonToolUse {
 				for _, tr := range stepResult.Content.ToolResults() {
 					if tr.StopTurn {
+						turnStopped = true
 						finishReason = message.FinishReasonEndTurn
 						break
 					}
@@ -1384,14 +1425,33 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		}
 	}
 
+	// Ask Stop hooks whether the turn may end. This runs while the request is
+	// still active, so the session stays busy for the whole hook and a
+	// Cancel reaches it through genCtx. A prompt the user already queued
+	// takes priority, and a turn is never extended after a tool ended it, or
+	// after it was summarized (the request is already released by then).
+	var stopCall *SessionAgentCall
+	if topLevel && !turnStopped && !shouldSummarize && genCtx.Err() == nil && currentAssistant != nil {
+		if pending, _ := a.messageQueue.Get(call.SessionID); len(pending) == 0 {
+			stopCall = a.stopContinuation(genCtx, call, currentAssistant.Content().String())
+		}
+	}
+
 	// Route the finished turn's response back to the channel it came
 	// from, unless the turn was cut short for summarization with work
-	// still pending — the queued continuation carries the channel and
-	// replies when it actually finishes. Runs before the busy state is
-	// released so a follow-up push queued behind this turn cannot
-	// overtake its reply.
-	if currentAssistant != nil && (!shouldSummarize || len(currentAssistant.ToolCalls()) == 0) {
+	// still pending, or a Stop hook is about to continue it. The queued or
+	// continuation pass carries the channel and replies when it actually
+	// finishes. Runs before the busy state is released so a follow-up push
+	// queued behind this turn cannot overtake its reply.
+	if currentAssistant != nil && stopCall == nil && (!shouldSummarize || len(currentAssistant.ToolCalls()) == 0) {
 		a.sendChannelReply(ctx, call, currentAssistant.Content().String(), completedToolCalls)
+	}
+
+	// A Cancel that landed while the hook was returning has already
+	// cancelled genCtx, but the hand-off below no longer sees it once the
+	// request is released.
+	if stopCall != nil && genCtx.Err() != nil {
+		stopCall = nil
 	}
 
 	// Release active request before publishing the notification.
@@ -1457,6 +1517,14 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 		// terminal cancelled RunComplete so a caller waiting on that
 		// RunID does not hang.
 		a.publishCanceledQueueDrops(canceledRunIDDrops)
+	}
+	if len(queuedMessages) == 0 && stopCall != nil {
+		// A pending cancel mark covers the continuation too. Drop it quietly
+		// rather than through the queue-drop path, which would publish a
+		// cancelled RunComplete for a RunID this turn still completes.
+		if mark, ok := a.cancelMark.Get(call.SessionID); !ok || mark == 0 {
+			queuedMessages = []SessionAgentCall{*stopCall}
+		}
 	}
 	if len(queuedMessages) == 0 {
 		// No queued work. Clear the cancel mark only when no accepted
