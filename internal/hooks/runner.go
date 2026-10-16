@@ -186,6 +186,20 @@ func (r *Runner) RunPrompt(ctx context.Context, sessionID, prompt string) (Aggre
 	return agg, nil
 }
 
+// RunTextComplete executes TextComplete hooks with the finished text
+// block. The aggregated UpdatedText, when set, replaces the block.
+func (r *Runner) RunTextComplete(ctx context.Context, sessionID, messageID, text string) AggregateResult {
+	hooks := r.matchingHooks(EventTextComplete, "")
+	if len(hooks) == 0 {
+		return AggregateResult{Decision: DecisionNone}
+	}
+	envVars := BuildLifecycleEnv(EventTextComplete, sessionID, r.cwd, r.projectDir)
+	payload := BuildTextCompletePayload(sessionID, r.cwd, messageID, text)
+	agg := r.executeHooks(ctx, hooks, envVars, payload, "", false)
+	slog.Info("Hook completed", "event", EventTextComplete, "hooks", agg.HookCount)
+	return agg
+}
+
 // executeHooks is the shared orchestration. It deduplicates hooks by
 // command, runs them in parallel, waits for completion, and aggregates
 // results in config order.

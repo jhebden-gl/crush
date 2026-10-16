@@ -64,6 +64,11 @@ const (
 	// before the turn reaches the LLM. Only injected context is honored
 	// today; see Runner.RunPrompt.
 	EventUserPromptSubmit = "UserPromptSubmit"
+
+	// EventTextComplete fires when the model finishes streaming a text
+	// block. A hook can replace the block via updated_text; the
+	// replacement is what gets stored, shown, and replayed to the model.
+	EventTextComplete = "TextComplete"
 )
 
 // AllEvents lists every supported hook event name. Used for config
@@ -82,6 +87,7 @@ var AllEvents = []string{
 	EventPreCompact,
 	EventPostCompact,
 	EventUserPromptSubmit,
+	EventTextComplete,
 }
 
 // eventNormMap maps lowercased-no-underscores event names to their
@@ -169,6 +175,7 @@ type HookResult struct {
 	Reason       string // Deny or halt reason (same field, different audience).
 	Context      string
 	UpdatedInput string // Shallow-merge patch against tool_input (opaque JSON).
+	UpdatedText  string // Replacement text (TextComplete).
 }
 
 // AggregateResult holds the combined outcome of all hooks for an event.
@@ -180,6 +187,7 @@ type AggregateResult struct {
 	Reason       string     // Concatenated deny/halt reasons (newline-separated).
 	Context      string     // Concatenated context from all hooks.
 	UpdatedInput string     // Merged tool_input JSON (empty if no patches).
+	UpdatedText  string     // Last replacement text (empty if none).
 }
 
 // aggregate merges multiple HookResults into a single AggregateResult.
@@ -199,6 +207,7 @@ func aggregate(results []HookResult, origToolInput string, replace bool) Aggrega
 		contexts []string
 		merged   = origToolInput
 		anyPatch = false
+		text     string
 	)
 	for _, r := range results {
 		switch r.Decision {
@@ -221,6 +230,9 @@ func aggregate(results []HookResult, origToolInput string, replace bool) Aggrega
 				// its reason so the user sees it.
 				reasons = append(reasons, r.Reason)
 			}
+		}
+		if r.UpdatedText != "" {
+			text = r.UpdatedText
 		}
 		if r.Context != "" {
 			contexts = append(contexts, r.Context)
@@ -246,9 +258,10 @@ func aggregate(results []HookResult, origToolInput string, replace bool) Aggrega
 	}
 
 	agg := AggregateResult{
-		Decision:  decision,
-		Halt:      halt,
-		HookCount: len(results),
+		Decision:    decision,
+		Halt:        halt,
+		UpdatedText: text,
+		HookCount:   len(results),
 	}
 	if anyPatch {
 		agg.UpdatedInput = merged

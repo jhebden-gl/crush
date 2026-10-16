@@ -303,6 +303,21 @@ func (a *sessionAgent) fireTurnEndHook(ctx context.Context, sessionID string, ms
 	a.hookRunner.RunTurnEnd(ctx, sessionID, text)
 }
 
+// fireTextCompleteHook runs TextComplete hooks on a finished text block and
+// returns the replacement, or "" when the block should stay as written.
+func (a *sessionAgent) fireTextCompleteHook(ctx context.Context, sessionID, messageID, text string) string {
+	if a.hookRunner == nil || strings.TrimSpace(text) == "" {
+		return ""
+	}
+	agg := a.hookRunner.RunTextComplete(ctx, sessionID, messageID, text)
+	// A blank replacement would leave an empty message, so like an empty
+	// one it means "no replacement".
+	if agg.UpdatedText == text || strings.TrimSpace(agg.UpdatedText) == "" {
+		return ""
+	}
+	return agg.UpdatedText
+}
+
 type SessionAgentOptions struct {
 	LargeModel           Model
 	SmallModel           Model
@@ -906,6 +921,11 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if call.MaxOutputTokens > 0 {
 		maxOutputTokens = &call.MaxOutputTokens
 	}
+	// Text hooks only run for top-level turns: a delegated sub-agent turn
+	// would fire them once per block.
+	topLevel := !call.NonInteractive && !a.isSubAgent
+	// Where each open text block starts in the message text, by block ID.
+	textBlockStart := map[string]int{}
 	result, err = agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:           message.PromptWithTextAttachments(outboundPrompt, call.Attachments),
 		Files:            files,
@@ -1022,6 +1042,28 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 				}
 			}
 			currentAssistant.FinishThinking()
+			return a.messages.Update(genCtx, *currentAssistant)
+		},
+		OnTextStart: func(id string) error {
+			textBlockStart[id] = len(currentAssistant.Content().Text)
+			return nil
+		},
+		OnTextEnd: func(id string) error {
+			start, ok := textBlockStart[id]
+			delete(textBlockStart, id)
+			if !topLevel || !ok {
+				return nil
+			}
+			content := currentAssistant.Content().Text
+			if start > len(content) {
+				return nil
+			}
+			block := content[start:]
+			replacement := a.fireTextCompleteHook(genCtx, call.SessionID, currentAssistant.ID, block)
+			if replacement == "" {
+				return nil
+			}
+			currentAssistant.SetContent(content[:start] + replacement)
 			return a.messages.Update(genCtx, *currentAssistant)
 		},
 		OnTextDelta: func(id string, text string) error {

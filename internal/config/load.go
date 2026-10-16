@@ -1441,6 +1441,7 @@ var hookEventNormMap = map[string]string{
 	"stopfailure":       "StopFailure",
 	"interrupt":         "Interrupt",
 	"userpromptsubmit":  "UserPromptSubmit",
+	"textcomplete":      "TextComplete",
 	"permissionrequest": "PermissionRequest",
 	"permissionresult":  "PermissionResult",
 	"precompact":        "PreCompact",
