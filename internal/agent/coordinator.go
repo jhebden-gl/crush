@@ -812,7 +812,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 	var promptHookRunner *hooks.Runner
 	if !isSubAgent {
 		if promptHooks := c.cfg.Config().Hooks[hooks.EventUserPromptSubmit]; len(promptHooks) > 0 {
-			promptHookRunner = hooks.NewRunner(promptHooks, c.cfg.WorkingDir(), c.cfg.WorkingDir())
+			promptHookRunner = hooks.NewRunner(map[string][]config.HookConfig{hooks.EventUserPromptSubmit: promptHooks}, c.cfg.WorkingDir(), c.cfg.WorkingDir())
 		}
 	}
 

@@ -854,7 +854,7 @@ func TestRunnerRunPromptConcatenatesContextAndIgnoresMatchers(t *testing.T) {
 		{Command: `echo '{"context":"current branch: feat/login"}'`, Matcher: "^bash$"},
 		{Command: `echo '{"context":"remember gofumpt"}'`},
 	})
-	r := NewRunner(hooks, t.TempDir(), t.TempDir())
+	r := NewRunner(map[string][]config.HookConfig{EventUserPromptSubmit: hooks}, t.TempDir(), t.TempDir())
 	agg, err := r.RunPrompt(context.Background(), "sess-1", "fix the login flow")
 	require.NoError(t, err)
 	require.Equal(t, DecisionNone, agg.Decision)
@@ -867,7 +867,7 @@ func TestRunnerRunPromptPassesPromptOnStdin(t *testing.T) {
 	t.Setenv("CRUSH_PROMPT_HOOK_OUT", out)
 
 	hookCfg := config.HookConfig{Command: `cat > "$CRUSH_PROMPT_HOOK_OUT"`}
-	r := NewRunner([]config.HookConfig{hookCfg}, t.TempDir(), t.TempDir())
+	r := NewRunner(map[string][]config.HookConfig{EventUserPromptSubmit: {hookCfg}}, t.TempDir(), t.TempDir())
 	agg, err := r.RunPrompt(context.Background(), "sess-1", "fix the login flow")
 	require.NoError(t, err)
 	require.Equal(t, DecisionNone, agg.Decision)
@@ -885,7 +885,7 @@ func TestRunnerRunPromptDeduplicatesCommands(t *testing.T) {
 		{Command: `echo '{"context":"one"}'`},
 		{Command: `echo '{"context":"one"}'`},
 	})
-	r := NewRunner(hooks, t.TempDir(), t.TempDir())
+	r := NewRunner(map[string][]config.HookConfig{EventUserPromptSubmit: hooks}, t.TempDir(), t.TempDir())
 	agg, err := r.RunPrompt(context.Background(), "sess-1", "hello")
 	require.NoError(t, err)
 	require.Len(t, agg.Hooks, 1)
@@ -898,7 +898,7 @@ func TestRunnerRunPromptSurfacesDecisionsWithoutEnforcingThem(t *testing.T) {
 	hooks := validatedPromptHooks(t, []config.HookConfig{
 		{Command: `echo "policy violation" >&2; exit 2`},
 	})
-	r := NewRunner(hooks, t.TempDir(), t.TempDir())
+	r := NewRunner(map[string][]config.HookConfig{EventUserPromptSubmit: hooks}, t.TempDir(), t.TempDir())
 	agg, err := r.RunPrompt(context.Background(), "sess-1", "deploy production")
 	require.NoError(t, err)
 	require.Equal(t, DecisionDeny, agg.Decision)
