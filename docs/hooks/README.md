@@ -196,6 +196,7 @@ snake_case (`PreToolUse`, `pre_tool_use`, `PRETOOLUSE` all work).
 | `PermissionResult`  | Permission decided (granted/denied) | observe                                  | —         |
 | `PreCompact`        | Before context compaction           | halt to prevent                          | —         |
 | `PostCompact`       | After context compaction            | observe                                  | —         |
+| `UserPromptSubmit`  | Prompt recorded, before the model   | context                                  | —         |
 
 **Matcher** only applies to tool events (`PreToolUse`, `PostToolUse`). It's a
 regex tested against the tool name (e.g. `^bash$`, `^(edit|write)$`,
