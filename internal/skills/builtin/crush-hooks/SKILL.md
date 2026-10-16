@@ -17,10 +17,10 @@ need to author correct hooks.
 
 ## Supported Events
 
-Crush supports 13 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
+Crush supports 16 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
 `SessionEnd`, `TurnStart`, `TurnEnd`, `StopFailure`, `Interrupt`,
 `PermissionRequest`, `PermissionResult`, `PreCompact`, `PostCompact`,
-`UserPromptSubmit`. Event names are case-insensitive and accept snake_case
+`UserPromptSubmit`, `TextComplete`, `StepStart`, `Stop`. Event names are case-insensitive and accept snake_case
 (`PreToolUse`, `pretooluse`, `pre_tool_use` all work). Tool events
 (`PreToolUse`, `PostToolUse`) support `matcher` to filter by tool name;
 lifecycle events run all configured hooks.
@@ -35,6 +35,20 @@ turn rather than once per delegated sub-agent turn.
 turn reaches the model. Only the `context` field is honored: it is prepended
 to the outbound prompt. `decision`, `halt`, and `updated_prompt` are parsed
 but not enforced, and `matcher` is ignored (there is no tool name).
+
+`TextComplete`, `StepStart`, and `Stop` fire only for the top-level agent, and
+`matcher` is ignored for them.
+
+- `TextComplete` fires when the model finishes a text block. Its payload has
+  `message_id` and `text`. Print `{"updated_text": "..."}` to replace the block;
+  the replacement is stored, shown, and replayed to the model. A failing hook
+  leaves the text as written.
+- `StepStart` fires before each model call. Its payload has `step` (zero-based).
+  Print `{"context": "..."}` to show the model extra context on that call only.
+- `Stop` fires when a turn is about to end. Its payload has `text` and
+  `stop_hook_active`. Print `{"decision": "block", "reason": "..."}`, or exit 2
+  with the reason on stderr, to run another pass with the reason as the prompt.
+  Check `stop_hook_active` to avoid asking forever; Crush caps it at 25 passes.
 
 ## Configuration
 

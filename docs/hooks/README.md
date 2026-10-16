@@ -17,9 +17,9 @@ forward.
 - Hooks are Claude Code-compatible
 - Crush ships with a builtin `crush-hook` skill write, edit, and configure
   hooks; just tell Crush how to configure Crush
-- Crush supports 13 hook events covering the full agent lifecycle: tool use,
-  session management, turn control, prompt submission, permissions, compaction,
-  and error handling
+- Crush supports 16 hook events covering the full agent lifecycle: tool use,
+  session management, turn control, prompt submission, streamed text,
+  permissions, compaction, and error handling
 - Hooks run in parallel for speed, but their results compose in config order
   for determinism
 
@@ -179,7 +179,7 @@ wins when rewriting input, but first deny wins when blocking.
 
 ## Events
 
-Crush supports 13 hook events. Event names are case-insensitive and accept
+Crush supports 16 hook events. Event names are case-insensitive and accept
 snake_case (`PreToolUse`, `pre_tool_use`, `PRETOOLUSE` all work).
 
 | Event               | Fires When                          | Control                                  | Matcher   |
@@ -196,11 +196,57 @@ snake_case (`PreToolUse`, `pre_tool_use`, `PRETOOLUSE` all work).
 | `PermissionResult`  | Permission decided (granted/denied) | observe                                  | —         |
 | `PreCompact`        | Before context compaction           | halt to prevent                          | —         |
 | `PostCompact`       | After context compaction            | observe                                  | —         |
+| `UserPromptSubmit`  | Prompt recorded, before the model   | context                                  | —         |
+| `TextComplete`      | Model finishes a text block         | replace text                             | —         |
+| `StepStart`         | Before each model call in a turn    | context (this call only)                 | —         |
+| `Stop`              | Turn is about to end                | continue the turn                        | —         |
 
 **Matcher** only applies to tool events (`PreToolUse`, `PostToolUse`). It's a
 regex tested against the tool name (e.g. `^bash$`, `^(edit|write)$`,
 `^mcp_`). Omit to match all tools. Lifecycle events run all configured hooks
 unconditionally.
+
+### TextComplete, StepStart and Stop
+
+These three fire only for the top-level agent. Sub-agents run without them, for
+the same reason they run without tool hooks.
+
+**`TextComplete`** fires each time the model finishes streaming a block of
+text. The payload carries `message_id` and the finished `text`. A hook can
+print `{"updated_text": "..."}` to replace the block. The replacement is what
+gets stored, shown in the UI, and sent back to the model on later turns.
+`updated_text` is a full replacement and the last hook in config order wins.
+If a hook fails, times out, or prints no `updated_text`, the block stays as
+written. `crush run` waits for each message to finish before printing it when a
+`TextComplete` hook is configured, so rewritten text never reaches stdout.
+
+**`StepStart`** fires before every model call in a turn, including the first.
+The payload carries `step`, the zero-based index of the call. A hook can print
+`{"context": "..."}` to show the model extra context on that call only. The
+context is not stored and does not carry into later steps or turns, and it is
+added after the prompt-cache breakpoints so it does not invalidate the cached
+prefix.
+
+**`Stop`** fires when the agent has finished a turn and would otherwise stop.
+The payload carries the turn's final `text` and `stop_hook_active`, which is
+`true` when this pass was itself requested by a `Stop` hook. A hook asks for
+another pass with `{"decision": "block", "reason": "..."}`, or by exiting 2 with
+the reason on stderr. The reason becomes the next prompt. This is the Claude
+Code `Stop` contract, so scripts written for it work unchanged. Crush does not
+fire `Stop` when the turn was halted by a hook, when the user has queued another
+prompt, or after a cancel, and it allows at most 25 consecutive extra passes.
+Check `stop_hook_active` in your hook to avoid asking forever.
+
+```bash
+#!/usr/bin/env bash
+# Stop hook: keep going until the test suite passes.
+read -r input
+[ "$(echo "$input" | jq -r .stop_hook_active)" = "true" ] && exit 0
+if ! go test ./... >/tmp/test.log 2>&1; then
+  jq -n --arg r "Tests are failing:\n$(tail -20 /tmp/test.log)" \
+    '{decision: "block", reason: $r}'
+fi
+```
 
 > **Note:** `TurnEnd` carries the assistant's rendered text content in its
 > stdin payload (`text` field). See [Stdin payload — TurnEnd](#stdin-payload--turnend)
@@ -904,6 +950,21 @@ continues with the full context intact.
 Only the common fields are honored. `context` is prepended to the outbound
 prompt; `halt`, `reason`, and `decision` are parsed and logged but do not yet
 affect the turn.
+
+### Output envelope — TextComplete
+
+Only `updated_text` is honored: a string that replaces the finished text block.
+Other fields, including `context`, are ignored.
+
+### Output envelope — StepStart
+
+Only `context` is honored.
+
+### Output envelope — Stop
+
+`decision: "block"` with a `reason` asks for another pass, using the reason as
+the next prompt. Exit code 2 with the reason on stderr does the same. Any other
+result lets the turn end.
 
 ### Exit codes
 
