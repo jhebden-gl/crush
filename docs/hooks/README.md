@@ -17,7 +17,7 @@ forward.
 - Hooks are Claude Code-compatible
 - Crush ships with a builtin `crush-hook` skill write, edit, and configure
   hooks; just tell Crush how to configure Crush
-- Crush supports 13 hook events covering the full agent lifecycle: tool use,
+- Crush supports 14 hook events covering the full agent lifecycle: tool use,
   session management, turn control, prompt submission, permissions, compaction,
   and error handling
 - Hooks run in parallel for speed, but their results compose in config order
@@ -179,7 +179,7 @@ wins when rewriting input, but first deny wins when blocking.
 
 ## Events
 
-Crush supports 13 hook events. Event names are case-insensitive and accept
+Crush supports 14 hook events. Event names are case-insensitive and accept
 snake_case (`PreToolUse`, `pre_tool_use`, `PRETOOLUSE` all work).
 
 | Event               | Fires When                          | Control                                  | Matcher   |
@@ -197,15 +197,52 @@ snake_case (`PreToolUse`, `pre_tool_use`, `PRETOOLUSE` all work).
 | `PreCompact`        | Before context compaction           | halt to prevent                          | —         |
 | `PostCompact`       | After context compaction            | observe                                  | —         |
 | `UserPromptSubmit`  | Prompt recorded, before the model   | context                                  | —         |
+| `TextComplete`      | Model finishes a text block         | replace text                             | —         |
 
 **Matcher** only applies to tool events (`PreToolUse`, `PostToolUse`). It's a
 regex tested against the tool name (e.g. `^bash$`, `^(edit|write)$`,
 `^mcp_`). Omit to match all tools. Lifecycle events run all configured hooks
 unconditionally.
 
+### TextComplete
+
+`TextComplete` fires each time the model finishes streaming a block of text,
+and only for the top-level agent. Sub-agents run without it, for the same
+reason they run without tool hooks. The payload carries `message_id` and the
+finished `text`.
+
+A hook can print `{"updated_text": "..."}` to replace the block. The
+replacement is what gets stored and what the next run sends back to the model.
+The model's own view of the run that produced the text is built from what it
+streamed, so later steps of that run, such as the steps after a tool call, still
+see the original. `updated_text` is a full replacement and the last hook in
+config order wins. If a hook fails, times out, or prints no `updated_text`, an
+empty one, or only whitespace, the block stays as written, so a hook cannot
+delete a block.
+
+`TextComplete` is not a redaction boundary. The original text is streamed to
+the UI and to event subscribers before the hook runs, and only the stored copy
+changes.
+
+`crush run` waits for each message to finish before printing it when a
+`TextComplete` hook is configured, so rewritten text never reaches stdout.
+That also holds back text the model wrote before a tool call until the tool
+finishes, and a run that is cancelled mid-message does not print that message.
+
+The hook runs inside the model's stream and the stream waits for it, so keep it
+fast. Set a hook `timeout` below the provider request timeout, or a slow hook
+can end a healthy stream.
+
+```bash
+#!/usr/bin/env bash
+# TextComplete hook: swap one word for a plainer one.
+jq -c '{updated_text: (.text | gsub("utilise"; "use"))}'
+```
+
 > **Note:** `TurnEnd` carries the assistant's rendered text content in its
 > stdin payload (`text` field). See [Stdin payload — TurnEnd](#stdin-payload--turnend)
-> below. All other lifecycle events use only the common fields.
+> below. `TextComplete` also adds fields ([Stdin payload — TextComplete](#stdin-payload--textcomplete)).
+> All other lifecycle events use only the common fields.
 
 **Scope**: tool events only fire on the **top-level agent's** tool calls.
 Sub-agents run without hook interception. The outer sub-agent tool call itself
@@ -843,6 +880,23 @@ Extends the common payload with the submitted prompt:
 }
 ```
 
+### Stdin payload — TextComplete
+
+`TextComplete` extends the common payload with the finished text block and the
+message it belongs to.
+
+```jsonc
+{
+  // ...common fields...
+
+  // string. ID of the assistant message the block belongs to.
+  "message_id": "9b1f...",
+
+  // string. The finished text block, as the model streamed it.
+  "text": "We utilise the cache."
+}
+```
+
 ### Output envelope (common)
 
 Fields a hook may print to stdout on exit 0. All are optional and apply to every
@@ -905,6 +959,12 @@ continues with the full context intact.
 Only the common fields are honored. `context` is prepended to the outbound
 prompt; `halt`, `reason`, and `decision` are parsed and logged but do not yet
 affect the turn.
+
+### Output envelope — TextComplete
+
+Only `updated_text` is honored: a string with some non-whitespace text that
+replaces the finished text block. Other fields, including `context`, are
+ignored.
 
 ### Exit codes
 
