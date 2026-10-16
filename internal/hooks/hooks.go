@@ -64,6 +64,10 @@ const (
 	// before the turn reaches the LLM. Only injected context is honored
 	// today; see Runner.RunPrompt.
 	EventUserPromptSubmit = "UserPromptSubmit"
+
+	// EventStepStart fires before each model call in a turn. A hook can
+	// add context that the model sees for that call only.
+	EventStepStart = "StepStart"
 )
 
 // AllEvents lists every supported hook event name. Used for config
@@ -82,6 +86,7 @@ var AllEvents = []string{
 	EventPreCompact,
 	EventPostCompact,
 	EventUserPromptSubmit,
+	EventStepStart,
 }
 
 // eventNormMap maps lowercased-no-underscores event names to their

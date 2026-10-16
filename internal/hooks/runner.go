@@ -186,6 +186,20 @@ func (r *Runner) RunPrompt(ctx context.Context, sessionID, prompt string) (Aggre
 	return agg, nil
 }
 
+// RunStepStart executes StepStart hooks before a model call. Only the
+// aggregated Context is honored by the caller.
+func (r *Runner) RunStepStart(ctx context.Context, sessionID string, step int) AggregateResult {
+	hooks := r.matchingHooks(EventStepStart, "")
+	if len(hooks) == 0 {
+		return AggregateResult{Decision: DecisionNone}
+	}
+	envVars := BuildLifecycleEnv(EventStepStart, sessionID, r.cwd, r.projectDir)
+	payload := BuildStepStartPayload(sessionID, r.cwd, step)
+	agg := r.executeHooks(ctx, hooks, envVars, payload, "", false)
+	slog.Info("Hook completed", "event", EventStepStart, "hooks", agg.HookCount)
+	return agg
+}
+
 // executeHooks is the shared orchestration. It deduplicates hooks by
 // command, runs them in parallel, waits for completion, and aggregates
 // results in config order.

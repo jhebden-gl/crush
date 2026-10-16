@@ -303,6 +303,15 @@ func (a *sessionAgent) fireTurnEndHook(ctx context.Context, sessionID string, ms
 	a.hookRunner.RunTurnEnd(ctx, sessionID, text)
 }
 
+// fireStepStartHook runs StepStart hooks and returns the context to show the
+// model on this call only.
+func (a *sessionAgent) fireStepStartHook(ctx context.Context, sessionID string, step int) string {
+	if a.hookRunner == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.hookRunner.RunStepStart(ctx, sessionID, step).Context)
+}
+
 type SessionAgentOptions struct {
 	LargeModel           Model
 	SmallModel           Model
@@ -906,6 +915,10 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 	if call.MaxOutputTokens > 0 {
 		maxOutputTokens = &call.MaxOutputTokens
 	}
+	// Step hooks only run for top-level turns: a delegated sub-agent turn
+	// would fire them once per call.
+	topLevel := !call.NonInteractive && !a.isSubAgent
+	var stepIndex int
 	result, err = agent.Stream(genCtx, fantasy.AgentStreamCall{
 		Prompt:           message.PromptWithTextAttachments(outboundPrompt, call.Attachments),
 		Files:            files,
@@ -974,6 +987,21 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (result *
 			if promptPrefix != "" {
 				prepared.Messages = append([]fantasy.Message{fantasy.NewSystemMessage(promptPrefix)}, prepared.Messages...)
 			}
+
+			// StepStart hooks add context for this model call only. It goes
+			// after the cache marks so the marked prefix is unchanged, and it
+			// is not stored, so it is not replayed on later steps or turns.
+			// It is framed as a reminder so the model does not read hook
+			// output, which can include repository text, as the user's words.
+			if topLevel {
+				if hookContext := a.fireStepStartHook(callContext, call.SessionID, stepIndex); hookContext != "" {
+					slog.Debug("StepStart hook added context", "session_id", call.SessionID, "step", stepIndex, "bytes", len(hookContext))
+					prepared.Messages = append(prepared.Messages, fantasy.NewUserMessage(
+						fmt.Sprintf("<system_reminder>%s</system_reminder>", hookContext),
+					))
+				}
+			}
+			stepIndex++
 
 			sessionLock.Lock()
 			stepMessages = cloneFantasyMessages(prepared.Messages)

@@ -129,6 +129,13 @@ func marshalPayload(v any) []byte {
 	return data
 }
 
+// StepStartPayload extends LifecyclePayload with the zero-based index
+// of the model call within the turn.
+type StepStartPayload struct {
+	LifecyclePayload
+	Step int `json:"step"`
+}
+
 // TurnEndPayload extends LifecyclePayload with the assistant's
 // rendered text content for the completed turn. Observe-only;
 // hooks cannot modify or block based on this data.
@@ -149,6 +156,15 @@ func BuildTurnEndPayload(sessionID, cwd, text string) []byte {
 	return marshalPayload(TurnEndPayload{
 		LifecyclePayload: lifecycle(EventTurnEnd, sessionID, cwd),
 		Text:             text,
+	})
+}
+
+// BuildStepStartPayload constructs the stdin payload for a StepStart
+// hook.
+func BuildStepStartPayload(sessionID, cwd string, step int) []byte {
+	return marshalPayload(StepStartPayload{
+		LifecyclePayload: lifecycle(EventStepStart, sessionID, cwd),
+		Step:             step,
 	})
 }
 
