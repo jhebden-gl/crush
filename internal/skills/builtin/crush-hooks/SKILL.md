@@ -17,11 +17,11 @@ need to author correct hooks.
 
 ## Supported Events
 
-Crush supports 13 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
+Crush supports 14 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
 `SessionEnd`, `TurnStart`, `TurnEnd`, `StopFailure`, `Interrupt`,
 `PermissionRequest`, `PermissionResult`, `PreCompact`, `PostCompact`,
-`UserPromptSubmit`. Event names are case-insensitive and accept snake_case
-(`PreToolUse`, `pretooluse`, `pre_tool_use` all work). Tool events
+`UserPromptSubmit`, `StepStart`. Event names are case-insensitive and accept
+snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work). Tool events
 (`PreToolUse`, `PostToolUse`) support `matcher` to filter by tool name;
 lifecycle events run all configured hooks.
 
@@ -35,6 +35,12 @@ turn rather than once per delegated sub-agent turn.
 turn reaches the model. Only the `context` field is honored: it is prepended
 to the outbound prompt. `decision`, `halt`, and `updated_prompt` are parsed
 but not enforced, and `matcher` is ignored (there is no tool name).
+
+`StepStart` fires before each model call, only for the top-level agent, and
+`matcher` is ignored. Its payload has `step` (zero-based). Print
+`{"context": "..."}` to show the model extra context on that call only, wrapped
+in a `<system_reminder>` block; the context is not stored or replayed on later
+calls. The call waits for the hook, so keep it fast and set a `timeout`.
 
 ## Configuration
 

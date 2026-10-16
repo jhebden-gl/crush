@@ -17,7 +17,7 @@ forward.
 - Hooks are Claude Code-compatible
 - Crush ships with a builtin `crush-hook` skill write, edit, and configure
   hooks; just tell Crush how to configure Crush
-- Crush supports 13 hook events covering the full agent lifecycle: tool use,
+- Crush supports 14 hook events covering the full agent lifecycle: tool use,
   session management, turn control, prompt submission, permissions, compaction,
   and error handling
 - Hooks run in parallel for speed, but their results compose in config order
@@ -179,7 +179,7 @@ wins when rewriting input, but first deny wins when blocking.
 
 ## Events
 
-Crush supports 13 hook events. Event names are case-insensitive and accept
+Crush supports 14 hook events. Event names are case-insensitive and accept
 snake_case (`PreToolUse`, `pre_tool_use`, `PRETOOLUSE` all work).
 
 | Event               | Fires When                          | Control                                  | Matcher   |
@@ -197,15 +197,47 @@ snake_case (`PreToolUse`, `pre_tool_use`, `PRETOOLUSE` all work).
 | `PreCompact`        | Before context compaction           | halt to prevent                          | —         |
 | `PostCompact`       | After context compaction            | observe                                  | —         |
 | `UserPromptSubmit`  | Prompt recorded, before the model   | context                                  | —         |
+| `StepStart`         | Before each model call in a turn    | context (this call only)                 | —         |
 
 **Matcher** only applies to tool events (`PreToolUse`, `PostToolUse`). It's a
 regex tested against the tool name (e.g. `^bash$`, `^(edit|write)$`,
 `^mcp_`). Omit to match all tools. Lifecycle events run all configured hooks
 unconditionally.
 
+### StepStart
+
+`StepStart` fires before every model call in a turn, including the first, and
+only for the top-level agent. Sub-agents run without it, for the same reason
+they run without tool hooks. The payload carries `step`, the zero-based index
+of the call within the current run; a queued prompt starts a new run, so the
+count starts again at 0.
+
+A hook can print `{"context": "..."}` to show the model extra context on that
+call only. Crush sends it as a separate user message wrapped in a
+`<system_reminder>` block, so the model does not take hook output (which can
+include repository text) for the user's own words. The context is not stored
+and does not carry into later steps or turns.
+
+The message is added after the prompt-cache breakpoints, so the marked prefix
+is unchanged and the new text is the only part that is not cached. A provider
+can still account for a trailing user message differently, for example around
+extended thinking, so check your provider's cache metrics before relying on it
+to keep a long tool loop cheap.
+
+The hook runs before each model call and the call waits for it, so keep it
+fast and set a `timeout` that suits it. A hook that fails or times out adds no
+context.
+
+```bash
+#!/usr/bin/env bash
+# StepStart hook: remind the model of the branch on every call.
+echo "{\"context\": \"Current branch: $(git branch --show-current)\"}"
+```
+
 > **Note:** `TurnEnd` carries the assistant's rendered text content in its
 > stdin payload (`text` field). See [Stdin payload — TurnEnd](#stdin-payload--turnend)
-> below. All other lifecycle events use only the common fields.
+> below. `StepStart` also adds fields ([Stdin payload — StepStart](#stdin-payload--stepstart)).
+> All other lifecycle events use only the common fields.
 
 **Scope**: tool events only fire on the **top-level agent's** tool calls.
 Sub-agents run without hook interception. The outer sub-agent tool call itself
@@ -843,6 +875,19 @@ Extends the common payload with the submitted prompt:
 }
 ```
 
+### Stdin payload — StepStart
+
+`StepStart` extends the common payload with the index of the model call.
+
+```jsonc
+{
+  // ...common fields...
+
+  // integer. Zero-based index of the model call within the current run.
+  "step": 0
+}
+```
+
 ### Output envelope (common)
 
 Fields a hook may print to stdout on exit 0. All are optional and apply to every
@@ -905,6 +950,11 @@ continues with the full context intact.
 Only the common fields are honored. `context` is prepended to the outbound
 prompt; `halt`, `reason`, and `decision` are parsed and logged but do not yet
 affect the turn.
+
+### Output envelope — StepStart
+
+Only `context` is honored. It is shown to the model on this call only.
+`decision`, `halt`, and exit codes 2 and 49 are ignored.
 
 ### Exit codes
 
