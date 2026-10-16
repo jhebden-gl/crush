@@ -446,8 +446,10 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	}(ctx, sess.ID, prompt)
 
 	messageEvents := app.Messages.Subscribe(ctx)
-	messageReadBytes := make(map[string]int)
-	var printed bool
+	// A TextComplete hook may rewrite a finished block, so hold output until
+	// each message is final instead of streaming text that could change.
+	holdOutput := app.hookRunner != nil && app.hookRunner.HasEvent(hooks.EventTextComplete)
+	printer := newStreamPrinter(output, holdOutput)
 
 	defer func() {
 		if progress && stderrTTY {
@@ -482,27 +484,9 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 			msg := event.Payload
 			if msg.SessionID == sess.ID && msg.Role == message.Assistant && len(msg.Parts) > 0 {
 				stopSpinner()
-
-				content := msg.Content().String()
-				readBytes := messageReadBytes[msg.ID]
-
-				if len(content) < readBytes {
-					slog.Error("Non-interactive: message content is shorter than read bytes", "message_length", len(content), "read_bytes", readBytes)
-					return fmt.Errorf("message content is shorter than read bytes: %d < %d", len(content), readBytes)
+				if err := printer.handle(msg); err != nil {
+					return err
 				}
-
-				part := content[readBytes:]
-				// Trim leading whitespace. Sometimes the LLM includes leading
-				// formatting and intentation, which we don't want here.
-				if readBytes == 0 {
-					part = strings.TrimLeft(part, " \t")
-				}
-				// Ignore initial whitespace-only messages.
-				if printed || strings.TrimSpace(part) != "" {
-					printed = true
-					fmt.Fprint(output, part)
-				}
-				messageReadBytes[msg.ID] = len(content)
 			}
 
 		case <-ctx.Done():
