@@ -64,6 +64,11 @@ const (
 	// before the turn reaches the LLM. Only injected context is honored
 	// today; see Runner.RunPrompt.
 	EventUserPromptSubmit = "UserPromptSubmit"
+
+	// EventStop fires when the agent finishes a turn and is about to
+	// stop. A hook can ask for another pass with decision "block" (or
+	// exit code 2), using its reason as the next prompt.
+	EventStop = "Stop"
 )
 
 // AllEvents lists every supported hook event name. Used for config
@@ -82,6 +87,7 @@ var AllEvents = []string{
 	EventPreCompact,
 	EventPostCompact,
 	EventUserPromptSubmit,
+	EventStop,
 }
 
 // eventNormMap maps lowercased-no-underscores event names to their
@@ -169,6 +175,7 @@ type HookResult struct {
 	Reason       string // Deny or halt reason (same field, different audience).
 	Context      string
 	UpdatedInput string // Shallow-merge patch against tool_input (opaque JSON).
+	Block        bool   // Stop hook asked for another pass.
 }
 
 // AggregateResult holds the combined outcome of all hooks for an event.
@@ -180,6 +187,14 @@ type AggregateResult struct {
 	Reason       string     // Concatenated deny/halt reasons (newline-separated).
 	Context      string     // Concatenated context from all hooks.
 	UpdatedInput string     // Merged tool_input JSON (empty if no patches).
+	Block        bool       // Any hook asked a Stop to continue.
+}
+
+// ContinueRequested reports whether a Stop hook asked for another pass,
+// either with decision "block" or by denying (exit code 2). A halt wins: exit
+// code 49 also reads as a deny, but it ends the turn.
+func (a AggregateResult) ContinueRequested() bool {
+	return !a.Halt && (a.Block || a.Decision == DecisionDeny)
 }
 
 // aggregate merges multiple HookResults into a single AggregateResult.
@@ -199,6 +214,7 @@ func aggregate(results []HookResult, origToolInput string, replace bool) Aggrega
 		contexts []string
 		merged   = origToolInput
 		anyPatch = false
+		block    bool
 	)
 	for _, r := range results {
 		switch r.Decision {
@@ -219,6 +235,12 @@ func aggregate(results []HookResult, origToolInput string, replace bool) Aggrega
 			if r.Reason != "" && r.Decision != DecisionDeny {
 				// A halting hook that didn't also deny still contributes
 				// its reason so the user sees it.
+				reasons = append(reasons, r.Reason)
+			}
+		}
+		if r.Block {
+			block = true
+			if r.Reason != "" && r.Decision != DecisionDeny {
 				reasons = append(reasons, r.Reason)
 			}
 		}
@@ -248,6 +270,7 @@ func aggregate(results []HookResult, origToolInput string, replace bool) Aggrega
 	agg := AggregateResult{
 		Decision:  decision,
 		Halt:      halt,
+		Block:     block,
 		HookCount: len(results),
 	}
 	if anyPatch {
