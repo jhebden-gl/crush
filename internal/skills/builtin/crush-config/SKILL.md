@@ -213,11 +213,11 @@ option ui exit-banner compact
 ## Hooks runtime
 
 Hooks are user-defined shell commands that fire on agent events. Crush supports
-15 events: `PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`,
+16 events: `PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`,
 `TurnStart`, `TurnEnd`, `StopFailure`, `Interrupt`, `PermissionRequest`,
 `PermissionResult`, `PreCompact`, `PostCompact`, `UserPromptSubmit`,
-`StepStart`, and `Stop`. This behavior is the same however the hook is defined
-(`hook add` or JSON).
+`TextComplete`, `StepStart`, and `Stop`. This behavior is the same however the
+hook is defined (`hook add` or JSON).
 
 ### How hooks work
 

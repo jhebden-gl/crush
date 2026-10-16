@@ -17,12 +17,13 @@ need to author correct hooks.
 
 ## Supported Events
 
-Crush supports 15 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
+Crush supports 16 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
 `SessionEnd`, `TurnStart`, `TurnEnd`, `StopFailure`, `Interrupt`,
 `PermissionRequest`, `PermissionResult`, `PreCompact`, `PostCompact`,
-`UserPromptSubmit`, `StepStart`, `Stop`. Event names are case-insensitive and
-accept snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work). Tool
-events (`PreToolUse`, `PostToolUse`) support `matcher` to filter by tool name;
+`UserPromptSubmit`, `TextComplete`, `StepStart`, `Stop`. Event names are
+case-insensitive and accept snake_case (`PreToolUse`, `pretooluse`,
+`pre_tool_use` all work). Tool events (`PreToolUse`, `PostToolUse`) support
+`matcher` to filter by tool name;
 lifecycle events run all configured hooks.
 
 `TurnEnd` is special among lifecycle events: its stdin payload includes a
@@ -35,6 +36,14 @@ turn rather than once per delegated sub-agent turn.
 turn reaches the model. Only the `context` field is honored: it is prepended
 to the outbound prompt. `decision`, `halt`, and `updated_prompt` are parsed
 but not enforced, and `matcher` is ignored (there is no tool name).
+
+`TextComplete` fires when the model finishes a text block, only for the
+top-level agent, and `matcher` is ignored. Its payload has `message_id` and
+`text`. Print `{"updated_text": "..."}` to replace the block; the replacement
+is stored and sent to the model on the next run, while later steps of the same
+run still see the original. A failing hook, or an empty or blank
+`updated_text`, leaves the text as written. The stream waits for the hook, so
+keep it fast.
 
 `StepStart` fires before each model call, only for the top-level agent, and
 `matcher` is ignored. Its payload has `step` (zero-based). Print

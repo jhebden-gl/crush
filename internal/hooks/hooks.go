@@ -73,6 +73,11 @@ const (
 	// stop. A hook can ask for another pass with decision "block" (or
 	// exit code 2), using its reason as the next prompt.
 	EventStop = "Stop"
+
+	// EventTextComplete fires when the model finishes streaming a text
+	// block. A hook can replace the block via updated_text; the
+	// replacement is what gets stored, shown, and replayed to the model.
+	EventTextComplete = "TextComplete"
 )
 
 // AllEvents lists every supported hook event name. Used for config
@@ -93,6 +98,7 @@ var AllEvents = []string{
 	EventUserPromptSubmit,
 	EventStepStart,
 	EventStop,
+	EventTextComplete,
 }
 
 // eventNormMap maps lowercased-no-underscores event names to their
@@ -181,6 +187,7 @@ type HookResult struct {
 	Context      string
 	UpdatedInput string // Shallow-merge patch against tool_input (opaque JSON).
 	Block        bool   // Stop hook asked for another pass.
+	UpdatedText  string // Replacement text (TextComplete).
 }
 
 // AggregateResult holds the combined outcome of all hooks for an event.
@@ -193,6 +200,7 @@ type AggregateResult struct {
 	Context      string     // Concatenated context from all hooks.
 	UpdatedInput string     // Merged tool_input JSON (empty if no patches).
 	Block        bool       // Any hook asked a Stop to continue.
+	UpdatedText  string     // Last replacement text (empty if none).
 }
 
 // ContinueRequested reports whether a Stop hook asked for another pass,
@@ -220,6 +228,7 @@ func aggregate(results []HookResult, origToolInput string, replace bool) Aggrega
 		merged   = origToolInput
 		anyPatch = false
 		block    bool
+		text     string
 	)
 	for _, r := range results {
 		switch r.Decision {
@@ -249,6 +258,9 @@ func aggregate(results []HookResult, origToolInput string, replace bool) Aggrega
 				reasons = append(reasons, r.Reason)
 			}
 		}
+		if r.UpdatedText != "" {
+			text = r.UpdatedText
+		}
 		if r.Context != "" {
 			contexts = append(contexts, r.Context)
 		}
@@ -273,10 +285,11 @@ func aggregate(results []HookResult, origToolInput string, replace bool) Aggrega
 	}
 
 	agg := AggregateResult{
-		Decision:  decision,
-		Halt:      halt,
-		Block:     block,
-		HookCount: len(results),
+		Decision:    decision,
+		Halt:        halt,
+		Block:       block,
+		UpdatedText: text,
+		HookCount:   len(results),
 	}
 	if anyPatch {
 		agg.UpdatedInput = merged

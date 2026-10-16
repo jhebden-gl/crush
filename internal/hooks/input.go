@@ -145,6 +145,14 @@ type StopPayload struct {
 	StopHookActive bool   `json:"stop_hook_active"`
 }
 
+// TextCompletePayload extends LifecyclePayload with the finished text
+// block and the message it belongs to.
+type TextCompletePayload struct {
+	LifecyclePayload
+	MessageID string `json:"message_id"`
+	Text      string `json:"text"`
+}
+
 // TurnEndPayload extends LifecyclePayload with the assistant's
 // rendered text content for the completed turn. Observe-only;
 // hooks cannot modify or block based on this data.
@@ -183,6 +191,16 @@ func BuildStopPayload(sessionID, cwd, text string, stopHookActive bool) []byte {
 		LifecyclePayload: lifecycle(EventStop, sessionID, cwd),
 		Text:             text,
 		StopHookActive:   stopHookActive,
+	})
+}
+
+// BuildTextCompletePayload constructs the stdin payload for a
+// TextComplete hook.
+func BuildTextCompletePayload(sessionID, cwd, messageID, text string) []byte {
+	return marshalPayload(TextCompletePayload{
+		LifecyclePayload: lifecycle(EventTextComplete, sessionID, cwd),
+		MessageID:        messageID,
+		Text:             text,
 	})
 }
 
@@ -282,6 +300,7 @@ func parseStdout(stdout string) HookResult {
 		Reason       string          `json:"reason"`
 		Context      json.RawMessage `json:"context"`
 		UpdatedInput json.RawMessage `json:"updated_input"`
+		UpdatedText  json.RawMessage `json:"updated_text"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
 		return HookResult{Decision: DecisionNone}
@@ -303,6 +322,7 @@ func parseStdout(stdout string) HookResult {
 	result.Decision = parseDecision(parsed.Decision)
 	result.Block = strings.EqualFold(parsed.Decision, "block")
 	result.UpdatedInput = rawToString(parsed.UpdatedInput)
+	result.UpdatedText = rawToText(parsed.UpdatedText)
 	return result
 }
 
@@ -380,6 +400,18 @@ func rawToString(raw json.RawMessage) string {
 	}
 	// Otherwise it's an object/array — use as-is.
 	return string(raw)
+}
+
+// rawToText returns the value of a JSON string and ignores anything else.
+func rawToText(raw json.RawMessage) string {
+	if len(raw) == 0 || raw[0] != '"' {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 func parseDecision(s string) Decision {

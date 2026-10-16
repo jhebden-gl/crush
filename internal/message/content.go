@@ -307,6 +307,18 @@ func (m *Message) AppendContent(delta string) {
 	}
 }
 
+// SetContent replaces the message's text with text, keeping the position of
+// the existing text part. A message with no text part gets one appended.
+func (m *Message) SetContent(text string) {
+	for i, part := range m.Parts {
+		if c, ok := part.(TextContent); ok {
+			m.Parts[i] = TextContent{Text: text, Hidden: c.Hidden}
+			return
+		}
+	}
+	m.Parts = append(m.Parts, TextContent{Text: text})
+}
+
 func (m *Message) AppendReasoningContent(delta string) {
 	found := false
 	for i, part := range m.Parts {
