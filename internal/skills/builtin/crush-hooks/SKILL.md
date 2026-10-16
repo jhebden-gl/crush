@@ -17,11 +17,11 @@ need to author correct hooks.
 
 ## Supported Events
 
-Crush supports 13 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
+Crush supports 14 hook events: `PreToolUse`, `PostToolUse`, `SessionStart`,
 `SessionEnd`, `TurnStart`, `TurnEnd`, `StopFailure`, `Interrupt`,
 `PermissionRequest`, `PermissionResult`, `PreCompact`, `PostCompact`,
-`UserPromptSubmit`. Event names are case-insensitive and accept snake_case
-(`PreToolUse`, `pretooluse`, `pre_tool_use` all work). Tool events
+`UserPromptSubmit`, `Stop`. Event names are case-insensitive and accept
+snake_case (`PreToolUse`, `pretooluse`, `pre_tool_use` all work). Tool events
 (`PreToolUse`, `PostToolUse`) support `matcher` to filter by tool name;
 lifecycle events run all configured hooks.
 
@@ -35,6 +35,14 @@ turn rather than once per delegated sub-agent turn.
 turn reaches the model. Only the `context` field is honored: it is prepended
 to the outbound prompt. `decision`, `halt`, and `updated_prompt` are parsed
 but not enforced, and `matcher` is ignored (there is no tool name).
+
+`Stop` fires when a turn is about to end, only for the top-level agent, and
+`matcher` is ignored. Its payload has `text` and `stop_hook_active`. Print
+`{"decision": "block", "reason": "..."}`, or exit 2 with the reason on stderr,
+to run another pass with the reason as the prompt. Exit 49 (halt) ends the
+turn. Check `stop_hook_active` to avoid asking forever; Crush caps it at 25
+passes. Set a hook `timeout` long enough for the check: a timeout lets the turn
+end.
 
 ## Configuration
 
