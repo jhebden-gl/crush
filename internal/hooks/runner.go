@@ -186,6 +186,49 @@ func (r *Runner) RunPrompt(ctx context.Context, sessionID, prompt string) (Aggre
 	return agg, nil
 }
 
+// RunTextComplete executes TextComplete hooks with the finished text
+// block. The aggregated UpdatedText, when set, replaces the block.
+func (r *Runner) RunTextComplete(ctx context.Context, sessionID, messageID, text string) AggregateResult {
+	hooks := r.matchingHooks(EventTextComplete, "")
+	if len(hooks) == 0 {
+		return AggregateResult{Decision: DecisionNone}
+	}
+	envVars := BuildLifecycleEnv(EventTextComplete, sessionID, r.cwd, r.projectDir)
+	payload := BuildTextCompletePayload(sessionID, r.cwd, messageID, text)
+	agg := r.executeHooks(ctx, hooks, envVars, payload, "", false)
+	slog.Info("Hook completed", "event", EventTextComplete, "hooks", agg.HookCount)
+	return agg
+}
+
+// RunStepStart executes StepStart hooks before a model call. Only the
+// aggregated Context is honored by the caller.
+func (r *Runner) RunStepStart(ctx context.Context, sessionID string, step int) AggregateResult {
+	hooks := r.matchingHooks(EventStepStart, "")
+	if len(hooks) == 0 {
+		return AggregateResult{Decision: DecisionNone}
+	}
+	envVars := BuildLifecycleEnv(EventStepStart, sessionID, r.cwd, r.projectDir)
+	payload := BuildStepStartPayload(sessionID, r.cwd, step)
+	agg := r.executeHooks(ctx, hooks, envVars, payload, "", false)
+	slog.Info("Hook completed", "event", EventStepStart, "hooks", agg.HookCount)
+	return agg
+}
+
+// RunStop executes Stop hooks with the turn's final text. If the result's
+// ContinueRequested is true, the caller should run another pass using
+// Reason as the prompt.
+func (r *Runner) RunStop(ctx context.Context, sessionID, text string, stopHookActive bool) AggregateResult {
+	hooks := r.matchingHooks(EventStop, "")
+	if len(hooks) == 0 {
+		return AggregateResult{Decision: DecisionNone}
+	}
+	envVars := BuildLifecycleEnv(EventStop, sessionID, r.cwd, r.projectDir)
+	payload := BuildStopPayload(sessionID, r.cwd, text, stopHookActive)
+	agg := r.executeHooks(ctx, hooks, envVars, payload, "", false)
+	slog.Info("Hook completed", "event", EventStop, "hooks", agg.HookCount, "continue", agg.ContinueRequested())
+	return agg
+}
+
 // executeHooks is the shared orchestration. It deduplicates hooks by
 // command, runs them in parallel, waits for completion, and aggregates
 // results in config order.

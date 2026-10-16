@@ -100,9 +100,79 @@ func BuildPostToolUsePayload(sessionID, cwd, toolName, toolInputJSON, toolOutput
 // stdin for non-tool lifecycle events (SessionStart, TurnStart, etc.).
 // ToolName and ToolInput are omitted since they don't apply.
 type LifecyclePayload struct {
-	Event     string `json:"event"`
-	SessionID string `json:"session_id"`
-	CWD       string `json:"cwd"`
+	Event         string `json:"event"`
+	HookEventName string `json:"hook_event_name"`
+	SessionID     string `json:"session_id"`
+	CWD           string `json:"cwd"`
+}
+
+// TextCompletePayload extends LifecyclePayload with the finished text
+// block and the message it belongs to.
+type TextCompletePayload struct {
+	LifecyclePayload
+	MessageID string `json:"message_id"`
+	Text      string `json:"text"`
+}
+
+// StepStartPayload extends LifecyclePayload with the zero-based index
+// of the model call within the turn.
+type StepStartPayload struct {
+	LifecyclePayload
+	Step int `json:"step"`
+}
+
+// StopPayload extends LifecyclePayload with the turn's final text and
+// whether this stop was itself triggered by a Stop hook, so a hook can
+// avoid asking for continuation forever.
+type StopPayload struct {
+	LifecyclePayload
+	Text           string `json:"text"`
+	StopHookActive bool   `json:"stop_hook_active"`
+}
+
+func lifecycle(eventName, sessionID, cwd string) LifecyclePayload {
+	return LifecyclePayload{
+		Event:         eventName,
+		HookEventName: eventName,
+		SessionID:     sessionID,
+		CWD:           cwd,
+	}
+}
+
+func marshalPayload(v any) []byte {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return []byte("{}")
+	}
+	return data
+}
+
+// BuildTextCompletePayload constructs the stdin payload for a
+// TextComplete hook.
+func BuildTextCompletePayload(sessionID, cwd, messageID, text string) []byte {
+	return marshalPayload(TextCompletePayload{
+		LifecyclePayload: lifecycle(EventTextComplete, sessionID, cwd),
+		MessageID:        messageID,
+		Text:             text,
+	})
+}
+
+// BuildStepStartPayload constructs the stdin payload for a StepStart
+// hook.
+func BuildStepStartPayload(sessionID, cwd string, step int) []byte {
+	return marshalPayload(StepStartPayload{
+		LifecyclePayload: lifecycle(EventStepStart, sessionID, cwd),
+		Step:             step,
+	})
+}
+
+// BuildStopPayload constructs the stdin payload for a Stop hook.
+func BuildStopPayload(sessionID, cwd, text string, stopHookActive bool) []byte {
+	return marshalPayload(StopPayload{
+		LifecyclePayload: lifecycle(EventStop, sessionID, cwd),
+		Text:             text,
+		StopHookActive:   stopHookActive,
+	})
 }
 
 // TurnEndPayload extends LifecyclePayload with the assistant's
@@ -116,11 +186,7 @@ type TurnEndPayload struct {
 // BuildLifecyclePayload constructs the JSON stdin payload for a
 // lifecycle hook command (non-tool events).
 func BuildLifecyclePayload(eventName, sessionID, cwd string) []byte {
-	p := LifecyclePayload{
-		Event:     eventName,
-		SessionID: sessionID,
-		CWD:       cwd,
-	}
+	p := lifecycle(eventName, sessionID, cwd)
 	data, err := json.Marshal(p)
 	if err != nil {
 		return []byte("{}")
@@ -132,12 +198,8 @@ func BuildLifecyclePayload(eventName, sessionID, cwd string) []byte {
 // TurnEnd hook, including the assistant's rendered text content.
 func BuildTurnEndPayload(sessionID, cwd, text string) []byte {
 	p := TurnEndPayload{
-		LifecyclePayload: LifecyclePayload{
-			Event:     EventTurnEnd,
-			SessionID: sessionID,
-			CWD:       cwd,
-		},
-		Text: text,
+		LifecyclePayload: lifecycle(EventTurnEnd, sessionID, cwd),
+		Text:             text,
 	}
 	data, err := json.Marshal(p)
 	if err != nil {
@@ -246,6 +308,7 @@ func parseStdout(stdout string) HookResult {
 		Reason       string          `json:"reason"`
 		Context      json.RawMessage `json:"context"`
 		UpdatedInput json.RawMessage `json:"updated_input"`
+		UpdatedText  json.RawMessage `json:"updated_text"`
 	}
 	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
 		return HookResult{Decision: DecisionNone}
@@ -265,7 +328,9 @@ func parseStdout(stdout string) HookResult {
 		Context: parseContext(parsed.Context),
 	}
 	result.Decision = parseDecision(parsed.Decision)
+	result.Block = strings.EqualFold(parsed.Decision, "block")
 	result.UpdatedInput = rawToString(parsed.UpdatedInput)
+	result.UpdatedText = rawToText(parsed.UpdatedText)
 	return result
 }
 
@@ -343,6 +408,18 @@ func rawToString(raw json.RawMessage) string {
 	}
 	// Otherwise it's an object/array — use as-is.
 	return string(raw)
+}
+
+// rawToText returns the value of a JSON string and ignores anything else.
+func rawToText(raw json.RawMessage) string {
+	if len(raw) == 0 || raw[0] != '"' {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ""
+	}
+	return s
 }
 
 func parseDecision(s string) Decision {
